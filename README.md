@@ -1,7 +1,7 @@
 # bits_and_bobs
 
 ccxt_simple_candle_plot.ipynb \
-ccxt_live_market_orders_kucoin.ipynb
+ccxt_market_orders_kucoin.ipynb
 -------------
 
 Place MARKET ORDERS in Python with the CCXT library and KuCoin | Tutorial
