@@ -1,6 +1,6 @@
 # bits_and_bobs
 
-ccxt_simple_candle_plot.ipynb
+ccxt_simple_candle_plot.ipynb \
 ccxt_live_market_orders_kucoin.ipynb
 -------------
 
