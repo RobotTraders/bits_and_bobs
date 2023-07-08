@@ -1,5 +1,16 @@
 # bits_and_bobs
 
+
+Minimize RISKS, Maximize PROFITS: the 2% rule in trading
+-------------
+Codes:
+position_sizing_calculator.ipynb
+
+https://youtu.be/KVIaTQtVXx4
+
+Find out about the power of the 2% rule in trading through this pedagogical video. Here is the art of risk management by limiting your exposure to a small percentage of your capital. Learn how this strategic approach helps protect your account from substantial losses and fosters long-term stability. Join me as I visually demonstrate this essential principle, providing you with valuable insights for making more informed trading decisions. 
+
+
 Place MARKET ORDERS in Python with the CCXT library and KuCoin | Tutorial
 -------------
 Codes:
