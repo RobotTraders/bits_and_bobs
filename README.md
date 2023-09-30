@@ -2,6 +2,7 @@
 
 ⭐ Automate Your Crypto Trading with Python & CCXT Library
 -------------
+\
 💻 Codes: [ccxt_automatic_trading.ipynb](https://github.com/RobotTraders/bits_and_bobs/blob/main/ccxt_automatic_trading.ipynb)
 \
 🎬 Video: [https://youtu.be/cM3VPdv6ruo](https://youtu.be/cM3VPdv6ruo)
