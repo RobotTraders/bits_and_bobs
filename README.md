@@ -1,4 +1,4 @@
-# bits_and_bobs
+# 💡 bits_and_bobs 💡
 
 ⭐ Place Crypto Trades Orders in Python & CCXT Library (Spot, Futures, Market, Limit, Leverage, ...)
 -------------
@@ -24,9 +24,7 @@ In this video, we take a deep dive into the create_order function of the CCXT li
 
 ⭐ Minimize RISKS, Maximize PROFITS: the 2% rule in trading
 -------------
-💻 Codes:
-position_sizing_calculator.ipynb
-
+💻 Codes: [https://github.com/RobotTraders/bits_and_bobs/blob/main/position_sizing_calculator.ipynb]
 🎬 Video: https://youtu.be/KVIaTQtVXx4
 
 Find out about the power of the 2% rule in trading through this pedagogical video. Here is the art of risk management by limiting your exposure to a small percentage of your capital. Learn how this strategic approach helps protect your account from substantial losses and fosters long-term stability. Join me as I visually demonstrate this essential principle, providing you with valuable insights for making more informed trading decisions. 
