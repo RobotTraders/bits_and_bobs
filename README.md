@@ -1,4 +1,4 @@
-# ⚙️ bits_and_bobs
+# bits_and_bobs
 
 ⭐ Automate Your Crypto Trading with Python & CCXT Library
 -------------
