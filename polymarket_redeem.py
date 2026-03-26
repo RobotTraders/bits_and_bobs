@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -10,6 +11,11 @@ from eth_utils import keccak
 from py_builder_relayer_client.client import RelayClient
 from py_builder_relayer_client.models import RelayerTxType, OperationType, SafeTransaction
 from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
+
+# Rate limits: https://docs.polymarket.com/api-reference/rate-limits
+# - Data API /positions: 150 req/10s (not a concern for a single call)
+# - Relayer /submit: 25 req/1 min (the bottleneck for batch redemptions)
+RELAYER_RETRY_WAIT = 60  # seconds to wait on rate limit before retrying
 
 
 def redeem_all(private_key, funder_address, signature_type, builder_api_key, builder_secret, builder_passphrase):
@@ -43,10 +49,25 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
 
     # redeemable=true filters server-side: only resolved positions with tokens still held.
     # This catches everything, including dust left over from partial sells on the UI.
-    positions = requests.get(
-        "https://data-api.polymarket.com/positions",
-        params={"user": funder_address, "redeemable": "true", "sizeThreshold": 0},
-    ).json()
+    try:
+        response = requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder_address, "redeemable": "true", "sizeThreshold": 0},
+        )
+        if response.status_code in (429, 1015):
+            print(f"{ts()} - Data API rate limited, waiting {RELAYER_RETRY_WAIT}s...")
+            time.sleep(RELAYER_RETRY_WAIT)
+            response = requests.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": funder_address, "redeemable": "true", "sizeThreshold": 0},
+            )
+        positions = response.json()
+    except Exception as e:
+        print(f"{ts()} - Failed to fetch positions: {e}")
+        return 0
+
+    # The API may still return positions with size 0 after redemption. Skip them.
+    positions = [p for p in positions if float(p.get("size", 0)) > 0]
 
     if not positions:
         print(f"{ts()} - No positions to redeem")
@@ -55,6 +76,10 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
     print(f"{ts()} - Found {len(positions)} redeemable positions")
 
     # ── Redeem Each Position ──────────────────────────────────────────────
+
+    # Relayer limit: 25 req/min. Each resp.wait() blocks for a few seconds
+    # (on-chain confirmation), which acts as a natural throttle. If the relayer
+    # rate limits us despite that, we wait and retry once.
 
     redeemed = 0
     for pos in positions:
@@ -78,8 +103,19 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
                 data="0x" + (selector + args).hex(),
                 value="0",
             )
-            resp = client.execute([txn], f"redeem {cid[:12]}")
-            resp.wait()
+
+            try:
+                resp = client.execute([txn], f"redeem {cid[:12]}")
+                resp.wait()
+            except Exception as relay_err:
+                status = getattr(relay_err, "status_code", None)
+                if status in (429, 1015):
+                    print(f"{ts()} - Relayer rate limited (HTTP {status}), waiting {RELAYER_RETRY_WAIT}s...")
+                    time.sleep(RELAYER_RETRY_WAIT)
+                    resp = client.execute([txn], f"redeem {cid[:12]}")
+                    resp.wait()
+                else:
+                    raise
 
             redeemed += 1
             print(f"{ts()} - Redeemed: {market}")
