@@ -12,17 +12,16 @@ from py_builder_relayer_client.client import RelayClient
 from py_builder_relayer_client.models import RelayerTxType, OperationType, SafeTransaction
 from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
 
-# Rate limits: https://docs.polymarket.com/api-reference/rate-limits
-# - Data API /positions: 150 req/10s (not a concern for a single call)
-# - Relayer /submit: 25 req/1 min (the bottleneck for batch redemptions)
-RELAYER_RETRY_WAIT = 60  # seconds to wait on rate limit before retrying
-
-
 def redeem_all(private_key, funder_address, signature_type, builder_api_key, builder_secret, builder_passphrase):
     ts = lambda: datetime.now().strftime("%H:%M:%S")
 
     USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
     CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
+    # Rate limits: https://docs.polymarket.com/api-reference/rate-limits
+    # - Data API /positions: 150 req/10s (not a concern for a single call)
+    # - Relayer /submit: 25 req/1 min (the bottleneck for batch redemptions)
+    RELAYER_RETRY_WAIT = 60  # seconds to wait on rate limit before retrying
 
     # ── Client Setup ──────────────────────────────────────────────────────
 
