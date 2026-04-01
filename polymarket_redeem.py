@@ -12,11 +12,18 @@ from py_builder_relayer_client.client import RelayClient
 from py_builder_relayer_client.models import RelayerTxType, OperationType, SafeTransaction
 from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
 
+# Contract addresses (Polygon)
+USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+
+# Function selectors (pre-computed)
+REDEEM_SELECTOR = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+NEG_RISK_REDEEM_SELECTOR = keccak(text="redeemPositions(bytes32,uint256[])")[:4]
+
+
 def redeem_all(private_key, funder_address, signature_type, builder_api_key, builder_secret, builder_passphrase):
     ts = lambda: datetime.now().strftime("%H:%M:%S")
-
-    USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-    CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
     # Rate limits: https://docs.polymarket.com/api-reference/rate-limits
     # - Data API /positions: 150 req/10s (not a concern for a single call)
@@ -52,6 +59,7 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
         response = requests.get(
             "https://data-api.polymarket.com/positions",
             params={"user": funder_address, "redeemable": "true", "sizeThreshold": 0},
+            timeout=15,
         )
         if response.status_code in (429, 1015):
             print(f"{ts()} - Data API rate limited, waiting {RELAYER_RETRY_WAIT}s...")
@@ -59,6 +67,7 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
             response = requests.get(
                 "https://data-api.polymarket.com/positions",
                 params={"user": funder_address, "redeemable": "true", "sizeThreshold": 0},
+                timeout=15,
             )
         positions = response.json()
     except Exception as e:
@@ -91,17 +100,57 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
 
         try:
             condition_bytes = bytes.fromhex(cid[2:])
-            selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
-            args = eth_encode(
-                ["address", "bytes32", "bytes32", "uint256[]"],
-                [USDC_ADDRESS, b"\x00" * 32, condition_bytes, [1, 2]],
-            )
-            txn = SafeTransaction(
-                to=CTF_ADDRESS,
-                operation=OperationType.Call,
-                data="0x" + (selector + args).hex(),
-                value="0",
-            )
+            neg_risk = pos.get("negativeRisk")
+
+            # ── Build Redemption Transaction ──────────────────────────
+            # Polymarket has two market structures, each with its own contract
+            # and function signature. The Data API's `negativeRisk` boolean
+            # identifies which type each position belongs to.
+            # Docs: https://docs.polymarket.com/developers/neg-risk/overview
+
+            if neg_risk is True:
+                # ── Neg-risk markets ──────────────────────────────────
+                # Multi-outcome markets using the neg-risk adapter contract.
+                # Function: redeemPositions(bytes32 conditionId, uint256[] amounts)
+                # Each position is a binary sub-position within the multi-outcome
+                # market. The amounts array has the position size (in raw USDC units)
+                # in the slot matching the held outcome, zero in the other.
+                size_raw = int(float(pos.get("size", 0)) * 1e6)
+                outcome_index = int(pos.get("outcomeIndex", 0))
+                amounts = [0, 0]
+                amounts[outcome_index] = size_raw
+                args = eth_encode(["bytes32", "uint256[]"], [condition_bytes, amounts])
+                txn = SafeTransaction(
+                    to=NEG_RISK_ADAPTER,
+                    operation=OperationType.Call,
+                    data="0x" + (NEG_RISK_REDEEM_SELECTOR + args).hex(),
+                    value="0",
+                )
+
+            elif neg_risk is False:
+                # ── Standard markets ──────────────────────────────────
+                # Binary markets using the CTF contract directly.
+                # Function: redeemPositions(address collateral, bytes32 parentCollection,
+                #                           bytes32 conditionId, uint256[] indexSets)
+                # indexSets [1, 2] covers both YES/NO outcomes so the contract
+                # redeems whichever side you hold.
+                args = eth_encode(
+                    ["address", "bytes32", "bytes32", "uint256[]"],
+                    [USDC_ADDRESS, b"\x00" * 32, condition_bytes, [1, 2]],
+                )
+                txn = SafeTransaction(
+                    to=CTF_ADDRESS,
+                    operation=OperationType.Call,
+                    data="0x" + (REDEEM_SELECTOR + args).hex(),
+                    value="0",
+                )
+
+            else:
+                # ── Unsupported market type ───────────────────────────
+                # negativeRisk is neither True nor False (missing or new type).
+                # Skip rather than send a malformed transaction.
+                print(f"{ts()} - Skipping {market}: unsupported market type (negativeRisk={neg_risk!r})")
+                continue
 
             try:
                 resp = client.execute([txn], f"redeem {cid[:12]}")
