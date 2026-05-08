@@ -12,23 +12,57 @@ from py_builder_relayer_client.client import RelayClient
 from py_builder_relayer_client.models import RelayerTxType, OperationType, SafeTransaction
 from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
 
-# Contract addresses (Polygon)
-USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
-
-# Function selectors (pre-computed)
-REDEEM_SELECTOR = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
-NEG_RISK_REDEEM_SELECTOR = keccak(text="redeemPositions(bytes32,uint256[])")[:4]
-
-
-def redeem_all(private_key, funder_address, signature_type, builder_api_key, builder_secret, builder_passphrase):
+def redeem_all(private_key, funder_address, signature_type,
+               builder_api_key, builder_secret, builder_passphrase,
+               output_token="pUSD"):
     ts = lambda: datetime.now().strftime("%H:%M:%S")
 
     # Rate limits: https://docs.polymarket.com/api-reference/rate-limits
     # - Data API /positions: 150 req/10s (not a concern for a single call)
     # - Relayer /submit: 25 req/1 min (the bottleneck for batch redemptions)
     RELAYER_RETRY_WAIT = 60  # seconds to wait on rate limit before retrying
+
+    # ── Contract addresses (Polygon) ─────────────────────────────────────
+    USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+    NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+
+    # V2 collateral adapters: redeem USDC.e from the legacy CTF/NegRiskAdapter,
+    # wrap it to pUSD, and send pUSD to the caller. Same 4-arg signature as
+    # the legacy CTF.redeemPositions; only conditionId is read.
+    CTF_COLLATERAL_ADAPTER = "0xAdA100Db00Ca00073811820692005400218FcE1f"
+    NEG_RISK_COLLATERAL_ADAPTER = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
+    POLYGON_RPC = "https://polygon-rpc.com"
+
+    # ── Function selectors (pre-computed) ────────────────────────────────
+    REDEEM_SELECTOR = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+    NEG_RISK_REDEEM_SELECTOR = keccak(text="redeemPositions(bytes32,uint256[])")[:4]
+    APPROVE_SELECTOR = keccak(text="setApprovalForAll(address,bool)")[:4]
+    IS_APPROVED_SELECTOR = keccak(text="isApprovedForAll(address,address)")[:4]
+
+    def _is_approved(adapter):
+        args = eth_encode(["address", "address"], [funder_address, adapter])
+        payload = {
+            "jsonrpc": "2.0", "method": "eth_call", "id": 1,
+            "params": [
+                {"to": CTF_ADDRESS, "data": "0x" + (IS_APPROVED_SELECTOR + args).hex()},
+                "latest",
+            ],
+        }
+        try:
+            r = requests.post(POLYGON_RPC, json=payload, timeout=10).json()
+            return int(r["result"], 16) == 1
+        except Exception:
+            return False  # safe default: script will prepend approve
+
+    def _approve_txn(adapter):
+        args = eth_encode(["address", "bool"], [adapter, True])
+        return SafeTransaction(
+            to=CTF_ADDRESS,
+            operation=OperationType.Call,
+            data="0x" + (APPROVE_SELECTOR + args).hex(),
+            value="0",
+        )
 
     # ── Client Setup ──────────────────────────────────────────────────────
 
@@ -83,6 +117,16 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
 
     print(f"{ts()} - Found {len(positions)} redeemable positions")
 
+    # ── Pre-flight: track which adapters this wallet has already approved ─
+    # The new adapters pull CT tokens via safeBatchTransferFrom, which
+    # requires a one-time setApprovalForAll on the CTF. We bundle the
+    # approval into the first redeem that needs each adapter.
+    approved_adapters = set()
+    if output_token == "pUSD":
+        for adapter in (CTF_COLLATERAL_ADAPTER, NEG_RISK_COLLATERAL_ADAPTER):
+            if _is_approved(adapter):
+                approved_adapters.add(adapter)
+
     # ── Redeem Each Position ──────────────────────────────────────────────
 
     # Relayer limit: 25 req/min. Each resp.wait() blocks for a few seconds
@@ -110,40 +154,56 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
 
             if neg_risk is True:
                 # ── Neg-risk markets ──────────────────────────────────
-                # Multi-outcome markets using the neg-risk adapter contract.
-                # Function: redeemPositions(bytes32 conditionId, uint256[] amounts)
-                # Each position is a binary sub-position within the multi-outcome
-                # market. The amounts array has the position size (in raw USDC units)
-                # in the slot matching the held outcome, zero in the other.
-                size_raw = int(float(pos.get("size", 0)) * 1e6)
-                outcome_index = int(pos.get("outcomeIndex", 0))
-                amounts = [0, 0]
-                amounts[outcome_index] = size_raw
-                args = eth_encode(["bytes32", "uint256[]"], [condition_bytes, amounts])
-                txn = SafeTransaction(
-                    to=NEG_RISK_ADAPTER,
-                    operation=OperationType.Call,
-                    data="0x" + (NEG_RISK_REDEEM_SELECTOR + args).hex(),
-                    value="0",
-                )
+                # Multi-outcome markets. Two redemption paths depending on
+                # which token the user wants out:
+                #   pUSD  → new NegRiskCtfCollateralAdapter (4-arg signature
+                #           inherited from CtfCollateralAdapter; only
+                #           conditionId is used, balances read on-chain).
+                #   USDC.e → legacy NegRiskAdapter (2-arg signature).
+                if output_token == "pUSD":
+                    args = eth_encode(
+                        ["address", "bytes32", "bytes32", "uint256[]"],
+                        [USDC_ADDRESS, b"\x00" * 32, condition_bytes, [1, 2]],
+                    )
+                    txn = SafeTransaction(
+                        to=NEG_RISK_COLLATERAL_ADAPTER,
+                        operation=OperationType.Call,
+                        data="0x" + (REDEEM_SELECTOR + args).hex(),
+                        value="0",
+                    )
+                    adapter_for_approval = NEG_RISK_COLLATERAL_ADAPTER
+                else:
+                    size_raw = int(float(pos.get("size", 0)) * 1e6)
+                    outcome_index = int(pos.get("outcomeIndex", 0))
+                    amounts = [0, 0]
+                    amounts[outcome_index] = size_raw
+                    args = eth_encode(["bytes32", "uint256[]"], [condition_bytes, amounts])
+                    txn = SafeTransaction(
+                        to=NEG_RISK_ADAPTER,
+                        operation=OperationType.Call,
+                        data="0x" + (NEG_RISK_REDEEM_SELECTOR + args).hex(),
+                        value="0",
+                    )
+                    adapter_for_approval = None
 
             elif neg_risk is False:
                 # ── Standard markets ──────────────────────────────────
-                # Binary markets using the CTF contract directly.
-                # Function: redeemPositions(address collateral, bytes32 parentCollection,
-                #                           bytes32 conditionId, uint256[] indexSets)
-                # indexSets [1, 2] covers both YES/NO outcomes so the contract
-                # redeems whichever side you hold.
+                # Binary markets. Same 4-arg redeemPositions signature for
+                # both paths; only the destination differs:
+                #   pUSD  → CtfCollateralAdapter (redeems then wraps).
+                #   USDC.e → legacy CTF directly.
+                # indexSets [1, 2] covers both YES/NO outcomes.
                 args = eth_encode(
                     ["address", "bytes32", "bytes32", "uint256[]"],
                     [USDC_ADDRESS, b"\x00" * 32, condition_bytes, [1, 2]],
                 )
                 txn = SafeTransaction(
-                    to=CTF_ADDRESS,
+                    to=CTF_COLLATERAL_ADAPTER if output_token == "pUSD" else CTF_ADDRESS,
                     operation=OperationType.Call,
                     data="0x" + (REDEEM_SELECTOR + args).hex(),
                     value="0",
                 )
+                adapter_for_approval = CTF_COLLATERAL_ADAPTER if output_token == "pUSD" else None
 
             else:
                 # ── Unsupported market type ───────────────────────────
@@ -152,15 +212,23 @@ def redeem_all(private_key, funder_address, signature_type, builder_api_key, bui
                 print(f"{ts()} - Skipping {market}: unsupported market type (negativeRisk={neg_risk!r})")
                 continue
 
+            # Bundle the one-time setApprovalForAll into the first redeem
+            # that needs each adapter (single relayer round-trip).
+            calls = []
+            if adapter_for_approval and adapter_for_approval not in approved_adapters:
+                calls.append(_approve_txn(adapter_for_approval))
+                approved_adapters.add(adapter_for_approval)
+            calls.append(txn)
+
             try:
-                resp = client.execute([txn], f"redeem {cid[:12]}")
+                resp = client.execute(calls, f"redeem {cid[:12]}")
                 resp.wait()
             except Exception as relay_err:
                 status = getattr(relay_err, "status_code", None)
                 if status in (429, 1015):
                     print(f"{ts()} - Relayer rate limited (HTTP {status}), waiting {RELAYER_RETRY_WAIT}s...")
                     time.sleep(RELAYER_RETRY_WAIT)
-                    resp = client.execute([txn], f"redeem {cid[:12]}")
+                    resp = client.execute(calls, f"redeem {cid[:12]}")
                     resp.wait()
                 else:
                     raise
