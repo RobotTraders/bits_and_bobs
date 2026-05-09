@@ -1,7 +1,5 @@
 import requests
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import MarketOrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2 import ClobClient, MarketOrderArgs, OrderType, Side
 
 
 #####################
@@ -80,7 +78,7 @@ def place_bet(client, token_id: str, amount: float):
     order = MarketOrderArgs(
         token_id=token_id,
         amount=amount,
-        side=BUY,
+        side=Side.BUY,
         order_type=OrderType.FOK
     )
     signed_order = client.create_market_order(order)
