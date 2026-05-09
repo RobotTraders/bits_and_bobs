@@ -4,15 +4,15 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
+from py_clob_client_v2 import (
+    ClobClient,
     OrderArgs,
     MarketOrderArgs,
     OrderType,
     BalanceAllowanceParams,
     AssetType,
+    Side,
 )
-from py_clob_client.order_builder.constants import BUY, SELL
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -185,7 +185,7 @@ def main():
             continue
 
         print(f"{ts()} - Placing order...")
-        place_order(market["yes_token_id"], BUY, amount=amount)
+        place_order(market["yes_token_id"], Side.BUY, amount=amount)
         held_tokens.add(market["yes_token_id"])
         print(f"{ts()} - ✓ Trade executed")
 

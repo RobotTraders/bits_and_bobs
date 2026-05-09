@@ -3,9 +3,7 @@ import json
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import MarketOrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client_v2 import ClobClient, MarketOrderArgs, OrderType, Side
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -95,7 +93,7 @@ def get_market(url):
     }
 
 def place_order(client, token_id, amount):
-    order = MarketOrderArgs(token_id=token_id, amount=amount, side=BUY, order_type=OrderType.FOK)
+    order = MarketOrderArgs(token_id=token_id, amount=amount, side=Side.BUY, order_type=OrderType.FOK)
     signed = client.create_market_order(order)
     return client.post_order(signed, OrderType.FOK)
 
